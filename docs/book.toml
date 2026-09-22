@@ -1,0 +1,5 @@
+[book]
+authors = ["Jane Lewis", "Josh Rampersad", "Darrell Roberts"]
+language = "en"
+src = "src"
+title = "The Typeshare Book"

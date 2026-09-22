@@ -1,0 +1,14 @@
+[package]
+name = "typeshare-annotation"
+version = "1.0.5"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "The annotation used to mark types for typeshare"
+repository = "https://github.com/1Password/typeshare"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["parsing", "proc-macro"] }
+quote = "1.0"
