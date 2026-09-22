@@ -836,7 +836,8 @@ mod test {
                 original: "field".to_string(),
                 renamed: "field".to_string(),
                 serde_rename: false,
-            },
+                    source_loc: crate::rust_types::SourceLocation::synthetic(),
+                },
             ty: RustType::Special(SpecialRustType::Option(Box::new(RustType::Simple {
                 id: "str".to_string(),
             }))),
@@ -860,7 +861,8 @@ mod test {
                 original: "field".to_string(),
                 renamed: "field".to_string(),
                 serde_rename: false,
-            },
+                    source_loc: crate::rust_types::SourceLocation::synthetic(),
+                },
             ty: RustType::Special(SpecialRustType::Option(Box::new(RustType::Simple {
                 id: "str".to_string(),
             }))),
@@ -886,7 +888,8 @@ mod test {
                 original: "field".to_string(),
                 renamed: "field".to_string(),
                 serde_rename: false,
-            },
+                    source_loc: crate::rust_types::SourceLocation::synthetic(),
+                },
             ty: RustType::Simple {
                 id: "str".to_string(),
             },
@@ -910,7 +913,8 @@ mod test {
                 original: "field".to_string(),
                 renamed: "field".to_string(),
                 serde_rename: false,
-            },
+                    source_loc: crate::rust_types::SourceLocation::synthetic(),
+                },
             ty: RustType::Simple {
                 id: "str".to_string(),
             },

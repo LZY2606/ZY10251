@@ -15,8 +15,52 @@ use crate::visitors::accept_type;
 /// Type level typeshare attributes are mapped by target language and a mapping of attribute.
 pub type DecoratorMap = HashMap<DecoratorKind, BTreeSet<String>>;
 
+/// Source location attached to an identifier at parse time.
+///
+/// This captures the `proc_macro2` span once, while the Rust AST is still
+/// available. Once the canonical graph is frozen, generators and lowering
+/// layers must use this location instead of querying `syn` types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// 1-based source line.
+    pub line: usize,
+    /// 0-based column, matching `proc_macro2::Span::start`.
+    pub column: usize,
+}
+
+impl SourceLocation {
+    /// Create a source location from a [`proc_macro2::Span`].
+    pub fn from_span(span: proc_macro2::Span) -> Self {
+        let start = span.start();
+        Self {
+            line: start.line,
+            column: start.column,
+        }
+    }
+
+    /// Location used for identifiers synthesized after parsing.
+    pub fn synthetic() -> Self {
+        Self { line: 0, column: 0 }
+    }
+
+    /// Whether this location refers to real source code.
+    pub fn is_real(&self) -> bool {
+        self.line != 0
+    }
+}
+
+impl std::fmt::Display for SourceLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_real() {
+            write!(f, "line {} column {}", self.line, self.column)
+        } else {
+            write!(f, "synthesized")
+        }
+    }
+}
+
 /// Identifier used in Rust structs, enums, and fields. It includes the `original` name and the `renamed` value after the transformation based on `serde` attributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Id {
     /// The original identifier name
     pub original: String,
@@ -26,7 +70,17 @@ pub struct Id {
     pub renamed: String,
     /// Was this renamed with `serde(rename = "newname")
     pub serde_rename: bool,
+    /// The source location of this identifier in the parsed Rust file.
+    pub source_loc: SourceLocation,
 }
+
+impl PartialEq for Id {
+    fn eq(&self, other: &Self) -> bool {
+        self.original == other.original
+    }
+}
+
+impl Eq for Id {}
 
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

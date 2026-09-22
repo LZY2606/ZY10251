@@ -655,6 +655,10 @@ fn get_ident(
     attrs: &[syn::Attribute],
     rename_all: &Option<String>,
 ) -> Id {
+    let span = ident
+        .map(|ident| ident.span())
+        .unwrap_or_else(proc_macro2::Span::call_site);
+    let source_loc = crate::rust_types::SourceLocation::from_span(span);
     let original = ident.map_or("???".to_string(), |id| id.to_string().replace("r#", ""));
 
     let mut renamed = rename_all_to_case(original.clone(), rename_all);
@@ -669,6 +673,7 @@ fn get_ident(
         original,
         renamed,
         serde_rename: renamed_via_serde_rename,
+        source_loc,
     }
 }
 

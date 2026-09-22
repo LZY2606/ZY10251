@@ -398,7 +398,8 @@ pub trait Language {
                     id: Id {
                         original: struct_name.clone(),
                         renamed: struct_name.clone(),
-                        serde_rename: false
+                        serde_rename: false,
+                        source_loc: crate::rust_types::SourceLocation::synthetic(),
                     },
                     fields: fields.clone(),
                     generic_types,

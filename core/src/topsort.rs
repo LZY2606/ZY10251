@@ -5,145 +5,176 @@ use crate::rust_types::{
     SpecialRustType,
 };
 
-fn get_dependencies_from_type(
-    tp: &RustType,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    match tp {
-        RustType::Generic { id, parameters } => {
-            if let Some(tp) = types.get(id) {
-                if seen.insert(id.clone()) {
-                    res.push(id.clone());
-                    get_dependencies(tp, types, res, seen);
-                    for parameter in parameters {
-                        let id = parameter.id().to_string();
-                        if let Some(tp) = types.get(&id) {
-                            if seen.insert(id.clone()) {
-                                res.push(id.clone());
-                                get_dependencies(tp, types, res, seen);
-                                seen.remove(&id.clone());
+/// Traversal state for the legacy topological dependency walk.
+///
+/// This walk intentionally preserves the quirks of the original implementation
+/// (e.g. dependencies are keyed by the item's *original* name even after
+/// `serde(rename)` reconciliation, anonymous struct variants never contribute
+/// dependencies, and generic parameters of a generic item are visited after the
+/// item itself). Both the legacy in-place [`topsort`] and the canonical graph
+/// freeze use it so that generated ordering stays byte identical.
+pub(crate) struct DependencyWalker<'a> {
+    types: &'a HashMap<String, &'a RustItem>,
+}
+
+impl<'a> DependencyWalker<'a> {
+    /// Build a name lookup table from a slice of items.
+    pub(crate) fn index(items: impl Iterator<Item = &'a RustItem>) -> HashMap<String, &'a RustItem> {
+        HashMap::from_iter(items.map(|thing| (item_original_name(thing).to_string(), thing)))
+    }
+
+    /// Create a walker over the given lookup table.
+    pub(crate) fn new(types: &'a HashMap<String, &'a RustItem>) -> Self {
+        Self { types }
+    }
+
+    /// Collect the transitive dependencies of `thing` in first-visit order.
+    pub(crate) fn dependencies(&self, thing: &RustItem) -> Vec<String> {
+        let mut res = Vec::new();
+        let mut seen = HashSet::new();
+        self.get_dependencies(thing, &mut res, &mut seen);
+        res
+    }
+
+    fn get_dependencies_from_type(
+        &self,
+        tp: &RustType,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match tp {
+            RustType::Generic { id, parameters } => {
+                if let Some(tp) = self.types.get(id) {
+                    if seen.insert(id.clone()) {
+                        res.push(id.clone());
+                        self.get_dependencies(tp, res, seen);
+                        for parameter in parameters {
+                            let id = parameter.id().to_string();
+                            if let Some(tp) = self.types.get(&id) {
+                                if seen.insert(id.clone()) {
+                                    res.push(id.clone());
+                                    self.get_dependencies(tp, res, seen);
+                                    seen.remove(&id.clone());
+                                }
                             }
                         }
+                        seen.remove(&id.clone());
                     }
-                    seen.remove(&id.clone());
                 }
             }
-        }
-        RustType::Simple { id } => {
-            if let Some(tp) = types.get(id) {
-                if seen.insert(id.clone()) {
-                    res.push(id.clone());
-                    get_dependencies(tp, types, res, seen);
-                    seen.remove(&id.clone());
+            RustType::Simple { id } => {
+                if let Some(tp) = self.types.get(id) {
+                    if seen.insert(id.clone()) {
+                        res.push(id.clone());
+                        self.get_dependencies(tp, res, seen);
+                        seen.remove(&id.clone());
+                    }
                 }
             }
-        }
-        RustType::Special(special) => match special {
-            SpecialRustType::HashMap(kt, vt) => {
-                get_dependencies_from_type(kt, types, res, seen);
-                get_dependencies_from_type(vt, types, res, seen);
-            }
-            SpecialRustType::Option(inner) => {
-                get_dependencies_from_type(inner, types, res, seen);
-            }
-            SpecialRustType::Vec(inner) => {
-                get_dependencies_from_type(inner, types, res, seen);
-            }
-            _ => {}
-        },
-    };
-    seen.remove(&tp.id().to_string());
-}
+            RustType::Special(special) => match special {
+                SpecialRustType::HashMap(kt, vt) => {
+                    self.get_dependencies_from_type(kt, res, seen);
+                    self.get_dependencies_from_type(vt, res, seen);
+                }
+                SpecialRustType::Option(inner) => {
+                    self.get_dependencies_from_type(inner, res, seen);
+                }
+                SpecialRustType::Vec(inner) => {
+                    self.get_dependencies_from_type(inner, res, seen);
+                }
+                _ => {}
+            },
+        };
+        seen.remove(&tp.id().to_string());
+    }
 
-fn get_enum_dependencies(
-    enm: &RustEnum,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    match enm {
-        RustEnum::Unit(_) => {}
-        RustEnum::Algebraic {
-            tag_key: _,
-            content_key: _,
-            shared,
-        } => {
-            if seen.insert(shared.id.original.to_string()) {
-                res.push(shared.id.original.to_string());
-                for variant in &shared.variants {
-                    match variant {
-                        RustEnumVariant::Unit(_) => {}
-                        RustEnumVariant::AnonymousStruct {
-                            fields: _,
-                            shared: _,
-                        } => {}
-                        RustEnumVariant::Tuple { ty, shared: _ } => {
-                            get_dependencies_from_type(ty, types, res, seen)
+    fn get_enum_dependencies(
+        &self,
+        enm: &RustEnum,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match enm {
+            RustEnum::Unit(_) => {}
+            RustEnum::Algebraic { shared, .. } => {
+                if seen.insert(shared.id.original.to_string()) {
+                    res.push(shared.id.original.to_string());
+                    for variant in &shared.variants {
+                        if let RustEnumVariant::Tuple { ty, .. } = variant {
+                            self.get_dependencies_from_type(ty, res, seen)
                         }
                     }
+                    seen.remove(&shared.id.original.to_string());
                 }
-                seen.remove(&shared.id.original.to_string());
             }
         }
     }
-}
 
-fn get_struct_dependencies(
-    strct: &RustStruct,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    if seen.insert(strct.id.original.to_string()) {
-        for field in &strct.fields {
-            get_dependencies_from_type(&field.ty, types, res, seen)
-        }
-        seen.remove(&strct.id.original.to_string());
-    }
-}
-
-fn get_type_alias_dependencies(
-    ta: &RustTypeAlias,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    if seen.insert(ta.id.original.to_string()) {
-        get_dependencies_from_type(&ta.r#type, types, res, seen);
-        for generic in &ta.generic_types {
-            if let Some(thing) = types.get(generic) {
-                get_dependencies(thing, types, res, seen)
+    fn get_struct_dependencies(
+        &self,
+        strct: &RustStruct,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        if seen.insert(strct.id.original.to_string()) {
+            for field in &strct.fields {
+                self.get_dependencies_from_type(&field.ty, res, seen)
             }
+            seen.remove(&strct.id.original.to_string());
         }
-        seen.remove(&ta.id.original.to_string());
+    }
+
+    fn get_type_alias_dependencies(
+        &self,
+        ta: &RustTypeAlias,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        if seen.insert(ta.id.original.to_string()) {
+            self.get_dependencies_from_type(&ta.r#type, res, seen);
+            for generic in &ta.generic_types {
+                if let Some(thing) = self.types.get(generic) {
+                    self.get_dependencies(thing, res, seen)
+                }
+            }
+            seen.remove(&ta.id.original.to_string());
+        }
+    }
+
+    fn get_const_dependencies(
+        &self,
+        c: &RustConst,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        if seen.insert(c.id.original.to_string()) {
+            self.get_dependencies_from_type(&c.r#type, res, seen);
+            seen.remove(&c.id.original.to_string());
+        }
+    }
+
+    fn get_dependencies(
+        &self,
+        thing: &RustItem,
+        res: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match thing {
+            RustItem::Enum(en) => self.get_enum_dependencies(en, res, seen),
+            RustItem::Struct(strct) => self.get_struct_dependencies(strct, res, seen),
+            RustItem::Alias(alias) => self.get_type_alias_dependencies(alias, res, seen),
+            RustItem::Const(c) => self.get_const_dependencies(c, res, seen),
+        }
     }
 }
 
-fn get_const_dependencies(
-    c: &RustConst,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    if seen.insert(c.id.original.to_string()) {
-        get_dependencies_from_type(&c.r#type, types, res, seen);
-        seen.remove(&c.id.original.to_string());
-    }
-}
-
-fn get_dependencies(
-    thing: &RustItem,
-    types: &HashMap<String, &RustItem>,
-    res: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
+/// The original (pre-rename) name used as the legacy dependency key.
+pub(crate) fn item_original_name(thing: &RustItem) -> &str {
     match thing {
-        RustItem::Enum(en) => get_enum_dependencies(en, types, res, seen),
-        RustItem::Struct(strct) => get_struct_dependencies(strct, types, res, seen),
-        RustItem::Alias(alias) => get_type_alias_dependencies(alias, types, res, seen),
-        RustItem::Const(c) => get_const_dependencies(c, types, res, seen),
+        RustItem::Enum(e) => &e.shared().id.original,
+        RustItem::Struct(strct) => &strct.id.original,
+        RustItem::Alias(ta) => &ta.id.original,
+        RustItem::Const(c) => &c.id.original,
     }
 }
 
@@ -196,30 +227,16 @@ fn toposort_impl(graph: &Vec<Vec<usize>>) -> Vec<usize> {
 }
 
 pub(crate) fn topsort(things: &mut [RustItem]) {
-    let types = HashMap::from_iter(things.iter().map(|thing| {
-        let id = match thing {
-            RustItem::Enum(e) => match e {
-                RustEnum::Algebraic {
-                    tag_key: _,
-                    content_key: _,
-                    shared,
-                } => shared.id.original.clone(),
-                RustEnum::Unit(shared) => shared.id.original.clone(),
-            },
-            RustItem::Struct(strct) => strct.id.original.clone(),
-            RustItem::Alias(ta) => ta.id.original.clone(),
-            RustItem::Const(c) => c.id.original.clone(),
-        };
-        (id, thing)
-    }));
+    let types = DependencyWalker::index(things.iter());
+    let walker = DependencyWalker::new(&types);
 
     let dag: Vec<Vec<usize>> = things
         .iter()
         .map(|thing| {
-            let mut deps = Vec::new();
-            get_dependencies(thing, &types, &mut deps, &mut HashSet::new());
-            deps.iter()
-                .map(|dep| get_index(types.get(dep).unwrap(), things))
+            walker
+                .dependencies(thing)
+                .iter()
+                .map(|dep| get_index(*types.get(dep).unwrap(), things))
                 .collect()
         })
         .collect();
